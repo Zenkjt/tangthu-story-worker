@@ -1,0 +1,8 @@
+{
+  "name": "tangthu-story-worker",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-24",
+  "vars": {
+    "ALLOWED_ORIGIN": "https://tangthu.pages.dev"
+  }
+}
