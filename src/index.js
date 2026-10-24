@@ -81,6 +81,10 @@ function storyPath(userId, storyId) {
   return `${STORY_ROOT}/${safeSegment(userId)}/${safeSegment(storyId)}/story.json`;
 }
 
+function currentPath(userId) {
+  return `${STORY_ROOT}/${safeSegment(userId)}/current.json`;
+}
+
 async function readJsonFile(env, path) {
   const res = await gh(env, `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`);
   const meta = await res.json();
@@ -197,11 +201,36 @@ async function currentStory(env, request) {
   if (!userId || !storyId) throw new Error("Thiếu user_id hoặc story_id");
   try {
     const result = await readJsonFile(env, storyPath(userId, storyId));
-    return { ok: true, story: result.data };
+    return { ok: true, story: addCoverUrl(result.data, userId, storyId) };
   } catch (error) {
     if (error.status === 404) return { ok: false, status: "not_found", error: "Chưa có story cache." };
     throw error;
   }
+}
+
+async function currentStoryByUser(env, request) {
+  const userId = String(request.searchParams.get("user_id") || "").trim();
+  if (!userId) throw new Error("Thiếu user_id");
+  try {
+    const current = await readJsonFile(env, currentPath(userId));
+    const storyId = String(current.data.story_id || "").trim();
+    if (!storyId) return { ok: false, status: "not_found", error: "Chưa có truyện đang đọc." };
+    const story = await readJsonFile(env, storyPath(userId, storyId));
+    return { ok: true, story: addCoverUrl(story.data, userId, storyId) };
+  } catch (error) {
+    if (error.status === 404) return { ok: false, status: "not_found", error: "Chưa có truyện đang đọc." };
+    throw error;
+  }
+}
+
+function addCoverUrl(story, userId, storyId) {
+  const ext = story.cover_ext || ".jpg";
+  return {
+    ...story,
+    cover_url:
+      story.cover_url ||
+      `https://raw.githubusercontent.com/${STORY_REPO}/main/${STORY_ROOT}/${safeSegment(userId)}/${safeSegment(storyId)}/cover${ext}`,
+  };
 }
 
 async function operation(env, request) {
@@ -209,7 +238,9 @@ async function operation(env, request) {
   if (!id) throw new Error("Thiếu request_id");
   try {
     const result = await readJsonFile(env, requestPath(id));
-    return { ok: true, operation: result.data };
+    const op = result.data;
+    if (op.story) op.story = addCoverUrl(op.story, op.user_id, op.story_id);
+    return { ok: true, operation: op };
   } catch (error) {
     if (error.status === 404) return { ok: false, status: "not_found", error: "Không tìm thấy request." };
     throw error;
@@ -245,6 +276,11 @@ export default {
       if (request.method === "GET" && url.pathname === "/story/current") {
         if (!rateLimit(request, "current")) return json({ ok: false, error: "Too many requests" }, 429, origin);
         return json(await currentStory(env, url), 200, origin);
+      }
+
+      if (request.method === "GET" && url.pathname === "/story/current-by-user") {
+        if (!rateLimit(request, "current")) return json({ ok: false, error: "Too many requests" }, 429, origin);
+        return json(await currentStoryByUser(env, url), 200, origin);
       }
 
       if (request.method === "GET" && url.pathname === "/story/operation") {
