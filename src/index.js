@@ -174,7 +174,7 @@ async function createRequest(env, body, action) {
 
   await writeJsonFile(env, requestPath(requestId), request, `story: queue ${action} ${requestId}`);
   try {
-    await dispatch(env, request);
+    await dispatch(env, { request_id: requestId });
   } catch (error) {
     request.status = "failed";
     request.message = error.message;
