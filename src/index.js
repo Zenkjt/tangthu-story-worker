@@ -223,7 +223,7 @@ async function readShelfStoryState(env, folderId) {
       operation: "read",
       token,
       folder_id: folderId,
-      relative_path: "ZtangthuCache/StoryState",
+      relative_path: "StoryState",
     }),
   });
 
