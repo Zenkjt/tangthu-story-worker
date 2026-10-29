@@ -81,10 +81,6 @@ function storyPath(userId, storyId) {
   return `${STORY_ROOT}/${safeSegment(userId)}/${safeSegment(storyId)}/story.json`;
 }
 
-function currentPath(userId) {
-  return `${STORY_ROOT}/${safeSegment(userId)}/current.json`;
-}
-
 async function readJsonFile(env, path) {
   const res = await gh(env, `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`);
   const meta = await res.json();
@@ -208,19 +204,72 @@ async function currentStory(env, request) {
   }
 }
 
+async function readShelfStoryState(env, folderId) {
+  const appsScriptUrl = String(env.TANGTHU_APPS_SCRIPT_URL || "").trim();
+  const token = String(env.TANGTHU_UPLOAD_TOKEN || "").trim();
+
+  if (!appsScriptUrl) {
+    throw new Error("TANGTHU_APPS_SCRIPT_URL chưa được cấu hình");
+  }
+  if (!token) {
+    throw new Error("TANGTHU_UPLOAD_TOKEN chưa được cấu hình");
+  }
+
+  const response = await fetch(appsScriptUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "story_cache",
+      operation: "read",
+      token,
+      folder_id: folderId,
+      relative_path: "StoryState",
+    }),
+  });
+
+  const text = await response.text();
+  let result;
+  try {
+    result = JSON.parse(text || "{}");
+  } catch {
+    throw new Error("Apps Script trả về dữ liệu không hợp lệ");
+  }
+
+  if (!response.ok || result.ok === false) {
+    throw new Error(result.error || `Apps Script HTTP ${response.status}`);
+  }
+
+  if (!result.exists) return null;
+
+  const raw = atob(String(result.content_base64 || ""));
+  const bytes = Uint8Array.from(raw, ch => ch.charCodeAt(0));
+  return JSON.parse(new TextDecoder("utf-8").decode(bytes));
+}
+
 async function currentStoryByUser(env, request) {
   const userId = String(request.searchParams.get("user_id") || "").trim();
+  const folderId = String(request.searchParams.get("folder_id") || "").trim();
+
   if (!userId) throw new Error("Thiếu user_id");
-  try {
-    const current = await readJsonFile(env, currentPath(userId));
-    const storyId = String(current.data.story_id || "").trim();
-    if (!storyId) return { ok: false, status: "not_found", error: "Chưa có truyện đang đọc." };
-    const story = await readJsonFile(env, storyPath(userId, storyId));
-    return { ok: true, story: addCoverUrl(story.data, userId, storyId) };
-  } catch (error) {
-    if (error.status === 404) return { ok: false, status: "not_found", error: "Chưa có truyện đang đọc." };
-    throw error;
+  if (!folderId) throw new Error("Thiếu folder_id");
+
+  const state = await readShelfStoryState(env, folderId);
+  if (!state || !state.story_id || !state.story) {
+    return {
+      ok: false,
+      status: "not_found",
+      error: "Chưa có truyện đang đọc trong tủ này.",
+    };
   }
+
+  if (String(state.story_id) !== String(state.story.story_id || "")) {
+    throw new Error("StoryState không nhất quán: story_id không khớp story.story_id");
+  }
+
+  return {
+    ok: true,
+    story: state.story,
+  };
 }
 
 function addCoverUrl(story, userId, storyId) {
