@@ -37,10 +37,12 @@ function rateLimit(request, kind) {
   const windowMs = 60_000;
   const max = kind === "current" || kind === "operation" ? 60 : 12;
   const old = limits.get(key);
+
   if (!old || now - old.start >= windowMs) {
     limits.set(key, { start: now, count: 1 });
     return true;
   }
+
   if (old.count >= max) return false;
   old.count++;
   return true;
@@ -60,6 +62,7 @@ function requireTriggerToken(request, env) {
 
 async function gh(env, path, options = {}) {
   if (!env.GITHUB_TOKEN) throw new Error("GITHUB_TOKEN chưa được cấu hình");
+
   const res = await fetch(`${GH_API}${path}`, {
     ...options,
     headers: {
@@ -70,12 +73,14 @@ async function gh(env, path, options = {}) {
       ...(options.headers || {}),
     },
   });
+
   if (!res.ok) {
     const body = await res.text();
     const error = new Error(`GitHub API ${res.status}: ${body.slice(0, 500)}`);
     error.status = res.status;
     throw error;
   }
+
   return res;
 }
 
@@ -94,10 +99,15 @@ function storyPath(userId, storyId) {
 }
 
 async function readJsonFile(env, path) {
-  const res = await gh(env, `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`);
+  const res = await gh(
+    env,
+    `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`
+  );
+
   const meta = await res.json();
   const raw = atob(String(meta.content || "").replace(/\n/g, ""));
   const bytes = Uint8Array.from(raw, ch => ch.charCodeAt(0));
+
   return {
     sha: meta.sha,
     data: JSON.parse(new TextDecoder("utf-8").decode(bytes)),
@@ -112,14 +122,17 @@ function utf8Base64(text) {
   const bytes = new TextEncoder().encode(text);
   let binary = "";
   const chunk = 0x8000;
+
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
+
   return btoa(binary);
 }
 
 async function writeJsonFile(env, path, data, message) {
   let sha = null;
+
   try {
     sha = (await readJsonFile(env, path)).sha;
   } catch (error) {
@@ -131,13 +144,19 @@ async function writeJsonFile(env, path, data, message) {
     content: utf8Base64(JSON.stringify(data, null, 2) + "\n"),
     branch: "main",
   };
+
   if (sha) payload.sha = sha;
 
-  const res = await gh(env, `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
+  const res = await gh(
+    env,
+    `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    }
+  );
+
   return res.json();
 }
 
@@ -159,6 +178,7 @@ async function readShelfStoryState(env, folderId) {
   if (!appsScriptUrl) {
     throw new Error("TANGTHU_APPS_SCRIPT_URL chưa được cấu hình");
   }
+
   if (!token) {
     throw new Error("TANGTHU_UPLOAD_TOKEN chưa được cấu hình");
   }
@@ -177,6 +197,7 @@ async function readShelfStoryState(env, folderId) {
 
   const text = await response.text();
   let result;
+
   try {
     result = JSON.parse(text || "{}");
   } catch {
@@ -191,6 +212,7 @@ async function readShelfStoryState(env, folderId) {
 
   const raw = atob(String(result.content_base64 || ""));
   const bytes = Uint8Array.from(raw, ch => ch.charCodeAt(0));
+
   return JSON.parse(new TextDecoder("utf-8").decode(bytes));
 }
 
@@ -199,7 +221,8 @@ async function createRequest(env, body, action) {
   let storyId = String(body.story_id || "").trim();
   const folderId = String(body.folder_id || "").trim();
   const url = String(body.url || "").trim();
-  const chapterNumber = body.chapter_number == null ? null : Number(body.chapter_number);
+  const chapterNumber =
+    body.chapter_number == null ? null : Number(body.chapter_number);
 
   if (!userId) throw new Error("Thiếu user_id");
   if (!folderId) throw new Error("Thiếu folder_id");
@@ -209,20 +232,28 @@ async function createRequest(env, body, action) {
   // Resolve it from the shelf-local StoryState instead.
   if (action !== "register" && !storyId) {
     const state = await readShelfStoryState(env, folderId);
+
     if (!state || !state.story_id) {
       throw new Error("Tủ này chưa có StoryState / truyện đang đọc");
     }
+
     storyId = String(state.story_id).trim();
   }
 
-  if (action !== "register" && !storyId) throw new Error("Thiếu story_id");
+  if (action !== "register" && !storyId) {
+    throw new Error("Thiếu story_id");
+  }
 
-  if (action === "jump" && (!Number.isInteger(chapterNumber) || chapterNumber < 1)) {
+  if (
+    action === "jump" &&
+    (!Number.isInteger(chapterNumber) || chapterNumber < 1)
+  ) {
     throw new Error("chapter_number không hợp lệ");
   }
 
   const requestId = crypto.randomUUID();
   const now = new Date().toISOString();
+
   const request = {
     schema_version: 1,
     request_id: requestId,
@@ -238,7 +269,12 @@ async function createRequest(env, body, action) {
     updated_at: now,
   };
 
-  await writeJsonFile(env, requestPath(requestId), request, `story: queue ${action} ${requestId}`);
+  await writeJsonFile(
+    env,
+    requestPath(requestId),
+    request,
+    `story: queue ${action} ${requestId}`
+  );
 
   try {
     await dispatch(env, { request_id: requestId });
@@ -246,7 +282,14 @@ async function createRequest(env, body, action) {
     request.status = "failed";
     request.message = error.message;
     request.updated_at = new Date().toISOString();
-    await writeJsonFile(env, requestPath(requestId), request, `story: dispatch failed ${requestId}`);
+
+    await writeJsonFile(
+      env,
+      requestPath(requestId),
+      request,
+      `story: dispatch failed ${requestId}`
+    );
+
     throw error;
   }
 
@@ -258,27 +301,162 @@ async function createRequest(env, body, action) {
   };
 }
 
+/* =========================================================
+   CROSSPOINT NEXT RECEPTOR
+   ========================================================= */
+
+async function loadCrosspointShelf(env, shelfNo) {
+  const data = await readStoryRepoJson(env, "config/branches.json");
+
+  const branches = Array.isArray(data)
+    ? data
+    : Array.isArray(data.branches)
+      ? data.branches
+      : [];
+
+  const branch = branches.find(
+    item => Number(item.shelf_no) === shelfNo
+  );
+
+  if (!branch) {
+    throw new Error(`Không tìm thấy shelf_no=${shelfNo}`);
+  }
+
+  if (branch.enabled === false || branch.status === "suspended") {
+    throw new Error(`Tủ shelf_no=${shelfNo} đang bị vô hiệu hóa`);
+  }
+
+  const userId = String(branch.id || "").trim();
+  const folderId = String(branch.root_folder_id || "").trim();
+
+  if (!userId) {
+    throw new Error("Shelf thiếu branch.id");
+  }
+
+  if (!folderId) {
+    throw new Error("Shelf thiếu root_folder_id");
+  }
+
+  return {
+    user_id: userId,
+    folder_id: folderId,
+    shelf_name: String(
+      branch.display_name ||
+      branch.folder_name ||
+      `Shelf ${shelfNo}`
+    ),
+  };
+}
+
+async function crosspointNext(env, request) {
+  if (request.method !== "POST") {
+    const error = new Error("Method Not Allowed");
+    error.status = 405;
+    throw error;
+  }
+
+  const body = await request.json();
+  const shelfNo = Number(body?.shelf_no);
+
+  if (!Number.isInteger(shelfNo) || shelfNo < 1) {
+    const error = new Error("Invalid shelf_no");
+    error.status = 400;
+    throw error;
+  }
+
+  const shelf = await loadCrosspointShelf(env, shelfNo);
+
+  /*
+   * CrossPoint receptor chỉ làm nhiệm vụ:
+   *
+   * shelf_no
+   *   ↓
+   * resolve shelf
+   *   ↓
+   * user_id + folder_id
+   *   ↓
+   * createRequest(..., "next")
+   *
+   * Không gọi lại /story/trigger.
+   */
+
+  const result = await createRequest(
+    env,
+    {
+      user_id: shelf.user_id,
+      folder_id: shelf.folder_id,
+    },
+    "next"
+  );
+
+  /*
+   * CrossPoint device.json browse yêu cầu catalog response.
+   * items rỗng để không tạo thêm item.
+   */
+
+  return {
+    ok: true,
+    status: result.status,
+    request_id: result.request_id,
+    shelf_no: shelfNo,
+    shelf_name: shelf.shelf_name,
+    direction: "next",
+    items: [],
+  };
+}
+
+/* ========================================================= */
+
 async function currentStory(env, request) {
-  const userId = String(request.searchParams.get("user_id") || "").trim();
-  const storyId = String(request.searchParams.get("story_id") || "").trim();
-  if (!userId || !storyId) throw new Error("Thiếu user_id hoặc story_id");
+  const userId = String(
+    request.searchParams.get("user_id") || ""
+  ).trim();
+
+  const storyId = String(
+    request.searchParams.get("story_id") || ""
+  ).trim();
+
+  if (!userId || !storyId) {
+    throw new Error("Thiếu user_id hoặc story_id");
+  }
+
   try {
-    const result = await readJsonFile(env, storyPath(userId, storyId));
-    return { ok: true, story: addCoverUrl(result.data, userId, storyId) };
+    const result = await readJsonFile(
+      env,
+      storyPath(userId, storyId)
+    );
+
+    return {
+      ok: true,
+      story: addCoverUrl(result.data, userId, storyId),
+    };
   } catch (error) {
-    if (error.status === 404) return { ok: false, status: "not_found", error: "Chưa có story cache." };
+    if (error.status === 404) {
+      return {
+        ok: false,
+        status: "not_found",
+        error: "Chưa có story cache.",
+      };
+    }
+
     throw error;
   }
 }
 
 async function currentStoryByUser(env, request) {
-  const userId = String(request.searchParams.get("user_id") || "").trim();
-  const folderId = String(request.searchParams.get("folder_id") || "").trim();
+  const userId = String(
+    request.searchParams.get("user_id") || ""
+  ).trim();
+
+  const folderId = String(
+    request.searchParams.get("folder_id") || ""
+  ).trim();
 
   if (!userId) throw new Error("Thiếu user_id");
   if (!folderId) throw new Error("Thiếu folder_id");
 
   const state = await readShelfStoryState(env, folderId);
+
   if (!state || !state.story_id || !state.story) {
     return {
       ok: false,
@@ -287,8 +465,13 @@ async function currentStoryByUser(env, request) {
     };
   }
 
-  if (String(state.story_id) !== String(state.story.story_id || "")) {
-    throw new Error("StoryState không nhất quán: story_id không khớp story.story_id");
+  if (
+    String(state.story_id) !==
+    String(state.story.story_id || "")
+  ) {
+    throw new Error(
+      "StoryState không nhất quán: story_id không khớp story.story_id"
+    );
   }
 
   return {
@@ -299,6 +482,7 @@ async function currentStoryByUser(env, request) {
 
 function addCoverUrl(story, userId, storyId) {
   const ext = story.cover_ext || ".jpg";
+
   return {
     ...story,
     cover_url:
@@ -308,29 +492,68 @@ function addCoverUrl(story, userId, storyId) {
 }
 
 async function operation(env, request) {
-  const id = String(request.searchParams.get("request_id") || "").trim();
+  const id = String(
+    request.searchParams.get("request_id") || ""
+  ).trim();
+
   if (!id) throw new Error("Thiếu request_id");
+
   try {
-    const result = await readJsonFile(env, requestPath(id));
+    const result = await readJsonFile(
+      env,
+      requestPath(id)
+    );
+
     const op = result.data;
-    if (op.story) op.story = addCoverUrl(op.story, op.user_id, op.story_id);
-    return { ok: true, operation: op };
+
+    if (op.story) {
+      op.story = addCoverUrl(
+        op.story,
+        op.user_id,
+        op.story_id
+      );
+    }
+
+    return {
+      ok: true,
+      operation: op,
+    };
   } catch (error) {
-    if (error.status === 404) return { ok: false, status: "not_found", error: "Không tìm thấy request." };
+    if (error.status === 404) {
+      return {
+        ok: false,
+        status: "not_found",
+        error: "Không tìm thấy request.",
+      };
+    }
+
     throw error;
   }
 }
 
 async function sources(env) {
   try {
-    const data = await readStoryRepoJson(env, SOURCES_PATH);
+    const data = await readStoryRepoJson(
+      env,
+      SOURCES_PATH
+    );
+
     return {
       ok: true,
-      sources: Array.isArray(data.sources) ? data.sources : [],
+      sources: Array.isArray(data.sources)
+        ? data.sources
+        : [],
       updated_at: data.updated_at || null,
     };
   } catch (error) {
-    if (error.status === 404) return { ok: true, sources: [], updated_at: null };
+    if (error.status === 404) {
+      return {
+        ok: true,
+        sources: [],
+        updated_at: null,
+      };
+    }
+
     throw error;
   }
 }
@@ -338,63 +561,261 @@ async function sources(env) {
 export default {
   async fetch(request, env) {
     const origin = requestOrigin(request, env);
-    if (!origin) return json({ ok: false, error: "Origin không được phép" }, 403);
+
+    if (!origin) {
+      return json(
+        {
+          ok: false,
+          error: "Origin không được phép",
+        },
+        403
+      );
+    }
 
     if (request.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: headers(origin) });
+      return new Response(null, {
+        status: 204,
+        headers: headers(origin),
+      });
     }
 
     const url = new URL(request.url);
 
     try {
-      if (request.method === "GET" && url.pathname === "/story/current") {
-        if (!rateLimit(request, "current")) return json({ ok: false, error: "Too many requests" }, 429, origin);
-        return json(await currentStory(env, url), 200, origin);
-      }
-
-      if (request.method === "GET" && url.pathname === "/story/current-by-user") {
-        if (!rateLimit(request, "current")) return json({ ok: false, error: "Too many requests" }, 429, origin);
-        return json(await currentStoryByUser(env, url), 200, origin);
-      }
-
-      if (request.method === "GET" && url.pathname === "/story/operation") {
-        if (!rateLimit(request, "operation")) return json({ ok: false, error: "Too many requests" }, 429, origin);
-        return json(await operation(env, url), 200, origin);
-      }
-
-      if (request.method === "GET" && url.pathname === "/story/sources") {
-        if (!rateLimit(request, "current")) return json({ ok: false, error: "Too many requests" }, 429, origin);
-        return json(await sources(env), 200, origin);
-      }
-
-      if (request.method === "POST" && url.pathname === "/story/trigger") {
-        requireTriggerToken(request, env);
-        if (!rateLimit(request, "trigger")) return json({ ok: false, error: "Too many requests" }, 429, origin);
-
-        const body = await request.json();
-        const action = String(body.action || "").trim().toLowerCase();
-
-        if (action !== "next" && action !== "previous") {
-          return json({ ok: false, error: "Unsupported trigger action" }, 400, origin);
+      if (
+        request.method === "GET" &&
+        url.pathname === "/story/current"
+      ) {
+        if (!rateLimit(request, "current")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
         }
 
-        return json(await createRequest(env, body, action), 202, origin);
+        return json(
+          await currentStory(env, url),
+          200,
+          origin
+        );
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/story/current-by-user"
+      ) {
+        if (!rateLimit(request, "current")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await currentStoryByUser(env, url),
+          200,
+          origin
+        );
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/story/operation"
+      ) {
+        if (!rateLimit(request, "operation")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await operation(env, url),
+          200,
+          origin
+        );
+      }
+
+      if (
+        request.method === "GET" &&
+        url.pathname === "/story/sources"
+      ) {
+        if (!rateLimit(request, "current")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await sources(env),
+          200,
+          origin
+        );
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/story/trigger"
+      ) {
+        requireTriggerToken(request, env);
+
+        if (!rateLimit(request, "trigger")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        const body = await request.json();
+        const action = String(
+          body.action || ""
+        ).trim().toLowerCase();
+
+        if (
+          action !== "next" &&
+          action !== "previous"
+        ) {
+          return json(
+            {
+              ok: false,
+              error: "Unsupported trigger action",
+            },
+            400,
+            origin
+          );
+        }
+
+        return json(
+          await createRequest(
+            env,
+            body,
+            action
+          ),
+          202,
+          origin
+        );
+      }
+
+      /*
+       * Dedicated CrossPoint NEXT receptor.
+       *
+       * Metalio:
+       * POST /story/crosspoint-next
+       *
+       * body:
+       * {
+       *   "shelf_no": 1
+       * }
+       */
+      if (
+        request.method === "POST" &&
+        url.pathname === "/story/crosspoint-next"
+      ) {
+        if (!rateLimit(request, "trigger")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await crosspointNext(env, request),
+          202,
+          origin
+        );
       }
 
       if (request.method === "POST") {
         const body = await request.json();
-        const action = url.pathname.replace(/^\/story\//, "");
-        if (!["register", "next", "previous", "jump"].includes(action)) {
-          return json({ ok: false, error: "Unsupported story action" }, 404, origin);
+        const action = url.pathname.replace(
+          /^\/story\//,
+          ""
+        );
+
+        if (
+          ![
+            "register",
+            "next",
+            "previous",
+            "jump",
+          ].includes(action)
+        ) {
+          return json(
+            {
+              ok: false,
+              error: "Unsupported story action",
+            },
+            404,
+            origin
+          );
         }
-        if (!rateLimit(request, action)) return json({ ok: false, error: "Too many requests" }, 429, origin);
-        return json(await createRequest(env, body, action), 202, origin);
+
+        if (!rateLimit(request, action)) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await createRequest(
+            env,
+            body,
+            action
+          ),
+          202,
+          origin
+        );
       }
 
-      return json({ ok: false, error: "Not found" }, 404, origin);
+      return json(
+        {
+          ok: false,
+          error: "Not found",
+        },
+        404,
+        origin
+      );
     } catch (error) {
       const status = error.status || 400;
-      return json({ ok: false, error: error.message || String(error) }, status, origin);
+
+      return json(
+        {
+          ok: false,
+          error: error.message || String(error),
+        },
+        status,
+        origin
+      );
     }
   },
 };
