@@ -379,7 +379,7 @@ async function loadCrosspointShelf(env, shelfNo) {
   };
 }
 
-async function crosspointAction(env, request, direction) {
+async function crosspointNext(env, request) {
   if (request.method !== "POST") {
     const error = new Error("Method Not Allowed");
     error.status = 405;
@@ -431,7 +431,7 @@ async function crosspointAction(env, request, direction) {
         user_id: shelf.user_id,
         folder_id: shelf.folder_id,
       },
-      direction
+      "next"
     );
   } catch (error) {
     const diagnostic = new Error(
@@ -442,8 +442,79 @@ async function crosspointAction(env, request, direction) {
     throw diagnostic;
   }
 
-  const operationUrl =
-    `/story/operation?request_id=${encodeURIComponent(result.request_id)}`;
+  return {
+    ok: true,
+    status: result.status,
+    request_id: result.request_id,
+    shelf_no: shelfNo,
+    shelf_name: shelf.shelf_name,
+    direction: "next",
+    items: [],
+  };
+}
+
+async function crosspointPrevious(env, request) {
+  if (request.method !== "POST") {
+    const error = new Error("Method Not Allowed");
+    error.status = 405;
+    throw error;
+  }
+
+  let body;
+  try {
+    body = await request.json();
+  } catch (error) {
+    const diagnostic = new Error("CROSSPOINT_INVALID_JSON: " + String(error));
+    diagnostic.status = 400;
+    diagnostic.stage = "crosspoint_json";
+    throw diagnostic;
+  }
+
+  const shelfNo = Number(body?.shelf_no);
+
+  if (!Number.isInteger(shelfNo) || shelfNo < 1) {
+    const error = new Error("CROSSPOINT_INVALID_SHELF_NO");
+    error.status = 400;
+    error.stage = "crosspoint_validate";
+    throw error;
+  }
+
+  let shelf;
+  try {
+    shelf = await loadCrosspointShelf(env, shelfNo);
+  } catch (error) {
+    console.error("CROSSPOINT_SHELF_LOAD_FAILED", {
+      shelf_no: shelfNo,
+      message: String(error?.message || error),
+      status: error?.status || null,
+    });
+
+    const diagnostic = new Error(
+      "CROSSPOINT_SHELF_LOAD_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 501;
+    diagnostic.stage = "shelf_load";
+    throw diagnostic;
+  }
+
+  let result;
+  try {
+    result = await createRequest(
+      env,
+      {
+        user_id: shelf.user_id,
+        folder_id: shelf.folder_id,
+      },
+      "previous"
+    );
+  } catch (error) {
+    const diagnostic = new Error(
+      "CROSSPOINT_REQUEST_CREATE_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 500;
+    diagnostic.stage = "request_create";
+    throw diagnostic;
+  }
 
   return {
     ok: true,
@@ -451,29 +522,10 @@ async function crosspointAction(env, request, direction) {
     request_id: result.request_id,
     shelf_no: shelfNo,
     shelf_name: shelf.shelf_name,
-    direction,
-    items: [
-      {
-        id: result.request_id,
-        title:
-          direction === "next"
-            ? "✓ Đã gửi yêu cầu: Next chapter"
-            : "✓ Đã gửi yêu cầu: Previous chapter",
-        description: `Tủ: ${shelf.shelf_name}. Request: ${result.request_id}`,
-        url: operationUrl,
-      },
-    ],
+    direction: "previous",
+    items: [],
   };
 }
-
-async function crosspointNext(env, request) {
-  return crosspointAction(env, request, "next");
-}
-
-async function crosspointPrevious(env, request) {
-  return crosspointAction(env, request, "previous");
-}
-
 
 async function currentStory(env, request) {
   const userId = String(
