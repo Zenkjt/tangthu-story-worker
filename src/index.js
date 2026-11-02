@@ -98,10 +98,10 @@ function storyPath(userId, storyId) {
   return `${STORY_ROOT}/${safeSegment(userId)}/${safeSegment(storyId)}/story.json`;
 }
 
-async function readJsonFile(env, path) {
+async function readJsonFile(env, path, repo = STORY_REPO) {
   const res = await gh(
     env,
-    `/repos/${STORY_REPO}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`
+    `/repos/${repo}/contents/${encodeURIComponent(path).replace(/%2F/g, "/")}?ref=main`
   );
 
   const meta = await res.json();
@@ -115,7 +115,7 @@ async function readJsonFile(env, path) {
 }
 
 async function readStoryRepoJson(env, path) {
-  return (await readJsonFile(env, path)).data;
+  return (await readJsonFile(env, path, STORY_REPO)).data;
 }
 
 function utf8Base64(text) {
@@ -228,8 +228,6 @@ async function createRequest(env, body, action) {
   if (!folderId) throw new Error("Thiếu folder_id");
   if (action === "register" && !url) throw new Error("Thiếu URL truyện");
 
-  // CrossPoint trigger intentionally sends no story_id.
-  // Resolve it from the shelf-local StoryState instead.
   if (action !== "register" && !storyId) {
     const state = await readShelfStoryState(env, folderId);
 
@@ -306,7 +304,7 @@ async function createRequest(env, body, action) {
    ========================================================= */
 
 async function loadCrosspointShelf(env, shelfNo) {
-  const data = await readStoryRepoJson(env, "config/branches.json");
+  const data = await readJsonFile(env, "config/branches.json", REPO);
 
   const branches = Array.isArray(data)
     ? data
@@ -366,20 +364,6 @@ async function crosspointNext(env, request) {
 
   const shelf = await loadCrosspointShelf(env, shelfNo);
 
-  /*
-   * CrossPoint receptor chỉ làm nhiệm vụ:
-   *
-   * shelf_no
-   *   ↓
-   * resolve shelf
-   *   ↓
-   * user_id + folder_id
-   *   ↓
-   * createRequest(..., "next")
-   *
-   * Không gọi lại /story/trigger.
-   */
-
   const result = await createRequest(
     env,
     {
@@ -388,11 +372,6 @@ async function crosspointNext(env, request) {
     },
     "next"
   );
-
-  /*
-   * CrossPoint device.json browse yêu cầu catalog response.
-   * items rỗng để không tạo thêm item.
-   */
 
   return {
     ok: true,
@@ -404,8 +383,6 @@ async function crosspointNext(env, request) {
     items: [],
   };
 }
-
-/* ========================================================= */
 
 async function currentStory(env, request) {
   const userId = String(
@@ -717,17 +694,6 @@ export default {
         );
       }
 
-      /*
-       * Dedicated CrossPoint NEXT receptor.
-       *
-       * Metalio:
-       * POST /story/crosspoint-next
-       *
-       * body:
-       * {
-       *   "shelf_no": 1
-       * }
-       */
       if (
         request.method === "POST" &&
         url.pathname === "/story/crosspoint-next"
