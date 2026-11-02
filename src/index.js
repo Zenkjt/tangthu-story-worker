@@ -353,25 +353,55 @@ async function crosspointNext(env, request) {
     throw error;
   }
 
-  const body = await request.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch (error) {
+    const diagnostic = new Error("CROSSPOINT_INVALID_JSON: " + String(error));
+    diagnostic.status = 400;
+    diagnostic.stage = "crosspoint_json";
+    throw diagnostic;
+  }
+
   const shelfNo = Number(body?.shelf_no);
 
   if (!Number.isInteger(shelfNo) || shelfNo < 1) {
-    const error = new Error("Invalid shelf_no");
+    const error = new Error("CROSSPOINT_INVALID_SHELF_NO");
     error.status = 400;
+    error.stage = "crosspoint_validate";
     throw error;
   }
 
-  const shelf = await loadCrosspointShelf(env, shelfNo);
+  let shelf;
+  try {
+    shelf = await loadCrosspointShelf(env, shelfNo);
+  } catch (error) {
+    const diagnostic = new Error(
+      "CROSSPOINT_SHELF_LOAD_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 500;
+    diagnostic.stage = "shelf_load";
+    throw diagnostic;
+  }
 
-  const result = await createRequest(
-    env,
-    {
-      user_id: shelf.user_id,
-      folder_id: shelf.folder_id,
-    },
-    "next"
-  );
+  let result;
+  try {
+    result = await createRequest(
+      env,
+      {
+        user_id: shelf.user_id,
+        folder_id: shelf.folder_id,
+      },
+      "next"
+    );
+  } catch (error) {
+    const diagnostic = new Error(
+      "CROSSPOINT_REQUEST_CREATE_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 500;
+    diagnostic.stage = "request_create";
+    throw diagnostic;
+  }
 
   return {
     ok: true,
@@ -772,12 +802,13 @@ export default {
         origin
       );
     } catch (error) {
-      const status = error.status || 400;
+      const status = error.status || 500;
 
       return json(
         {
           ok: false,
           error: error.message || String(error),
+          stage: error.stage || null,
         },
         status,
         origin
