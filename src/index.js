@@ -724,6 +724,28 @@ export default {
       }
 
       if (
+        request.method === "POST" &&
+        url.pathname === "/story/crosspoint-previous"
+      ) {
+        if (!rateLimit(request, "trigger")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await crosspointPrevious(env, request),
+          202,
+          origin
+        );
+      }
+      
+      if (
         request.method === "GET" &&
         url.pathname === "/story/current-by-user"
       ) {
