@@ -337,7 +337,7 @@ async function createRequest(env, body, action) {
    ========================================================= */
 
 async function loadCrosspointShelf(env, shelfNo) {
-  const data = await readJsonFile(env, "config/branches.json", REPO);
+  const data = (await readJsonFile(env, "config/branches.json", REPO)).data;
 
   const branches = Array.isArray(data)
     ? data
