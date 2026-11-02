@@ -229,10 +229,25 @@ async function createRequest(env, body, action) {
   if (action === "register" && !url) throw new Error("Thiếu URL truyện");
 
   if (action !== "register" && !storyId) {
-    const state = await readShelfStoryState(env, folderId);
+    let state;
+    try {
+      state = await readShelfStoryState(env, folderId);
+    } catch (error) {
+      const diagnostic = new Error(
+        "CROSSPOINT_STORY_STATE_READ_FAILED: " + String(error.message || error)
+      );
+      diagnostic.status = 502;
+      diagnostic.stage = "story_state";
+      throw diagnostic;
+    }
 
     if (!state || !state.story_id) {
-      throw new Error("Tủ này chưa có StoryState / truyện đang đọc");
+      const diagnostic = new Error(
+        "CROSSPOINT_STORY_STATE_EMPTY: Tủ này chưa có StoryState / truyện đang đọc"
+      );
+      diagnostic.status = 502;
+      diagnostic.stage = "story_state";
+      throw diagnostic;
     }
 
     storyId = String(state.story_id).trim();
@@ -267,12 +282,21 @@ async function createRequest(env, body, action) {
     updated_at: now,
   };
 
-  await writeJsonFile(
-    env,
-    requestPath(requestId),
-    request,
-    `story: queue ${action} ${requestId}`
-  );
+  try {
+    await writeJsonFile(
+      env,
+      requestPath(requestId),
+      request,
+      `story: queue ${action} ${requestId}`
+    );
+  } catch (error) {
+    const diagnostic = new Error(
+      "CROSSPOINT_REQUEST_WRITE_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 503;
+    diagnostic.stage = "request_write";
+    throw diagnostic;
+  }
 
   try {
     await dispatch(env, { request_id: requestId });
@@ -281,14 +305,23 @@ async function createRequest(env, body, action) {
     request.message = error.message;
     request.updated_at = new Date().toISOString();
 
-    await writeJsonFile(
-      env,
-      requestPath(requestId),
-      request,
-      `story: dispatch failed ${requestId}`
-    );
+    try {
+      await writeJsonFile(
+        env,
+        requestPath(requestId),
+        request,
+        `story: dispatch failed ${requestId}`
+      );
+    } catch {
+      // Diagnostic mode: preserve the original dispatch failure.
+    }
 
-    throw error;
+    const diagnostic = new Error(
+      "CROSSPOINT_DISPATCH_FAILED: " + String(error.message || error)
+    );
+    diagnostic.status = 504;
+    diagnostic.stage = "dispatch";
+    throw diagnostic;
   }
 
   return {
@@ -379,7 +412,7 @@ async function crosspointNext(env, request) {
     const diagnostic = new Error(
       "CROSSPOINT_SHELF_LOAD_FAILED: " + String(error.message || error)
     );
-    diagnostic.status = 500;
+    diagnostic.status = 501;
     diagnostic.stage = "shelf_load";
     throw diagnostic;
   }
