@@ -379,7 +379,7 @@ async function loadCrosspointShelf(env, shelfNo) {
   };
 }
 
-async function crosspointNext(env, request) {
+async function crosspointAction(env, request, direction) {
   if (request.method !== "POST") {
     const error = new Error("Method Not Allowed");
     error.status = 405;
@@ -431,7 +431,7 @@ async function crosspointNext(env, request) {
         user_id: shelf.user_id,
         folder_id: shelf.folder_id,
       },
-      "next"
+      direction
     );
   } catch (error) {
     const diagnostic = new Error(
@@ -442,16 +442,38 @@ async function crosspointNext(env, request) {
     throw diagnostic;
   }
 
+  const operationUrl =
+    `/story/operation?request_id=${encodeURIComponent(result.request_id)}`;
+
   return {
     ok: true,
     status: result.status,
     request_id: result.request_id,
     shelf_no: shelfNo,
     shelf_name: shelf.shelf_name,
-    direction: "next",
-    items: [],
+    direction,
+    items: [
+      {
+        id: result.request_id,
+        title:
+          direction === "next"
+            ? "✓ Đã gửi yêu cầu: Next chapter"
+            : "✓ Đã gửi yêu cầu: Previous chapter",
+        description: `Tủ: ${shelf.shelf_name}. Request: ${result.request_id}`,
+        url: operationUrl,
+      },
+    ],
   };
 }
+
+async function crosspointNext(env, request) {
+  return crosspointAction(env, request, "next");
+}
+
+async function crosspointPrevious(env, request) {
+  return crosspointAction(env, request, "previous");
+}
+
 
 async function currentStory(env, request) {
   const userId = String(
@@ -780,6 +802,28 @@ export default {
 
         return json(
           await crosspointNext(env, request),
+          202,
+          origin
+        );
+      }
+
+      if (
+        request.method === "POST" &&
+        url.pathname === "/story/crosspoint-previous"
+      ) {
+        if (!rateLimit(request, "trigger")) {
+          return json(
+            {
+              ok: false,
+              error: "Too many requests",
+            },
+            429,
+            origin
+          );
+        }
+
+        return json(
+          await crosspointPrevious(env, request),
           202,
           origin
         );
