@@ -409,6 +409,12 @@ async function crosspointNext(env, request) {
   try {
     shelf = await loadCrosspointShelf(env, shelfNo);
   } catch (error) {
+    console.error("CROSSPOINT_SHELF_LOAD_FAILED", {
+      shelf_no: shelfNo,
+      message: String(error?.message || error),
+      status: error?.status || null,
+    });
+
     const diagnostic = new Error(
       "CROSSPOINT_SHELF_LOAD_FAILED: " + String(error.message || error)
     );
