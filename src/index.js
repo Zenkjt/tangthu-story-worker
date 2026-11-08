@@ -449,7 +449,11 @@ async function crosspointNext(env, request) {
     shelf_no: shelfNo,
     shelf_name: shelf.shelf_name,
     direction: "next",
-    items: [],
+    items: [{
+      id: result.request_id,
+      title: "Request sent.",
+      author: "New chapter should be available in about 90 seconds.",
+    }],
   };
 }
 
@@ -523,9 +527,14 @@ async function crosspointPrevious(env, request) {
     shelf_no: shelfNo,
     shelf_name: shelf.shelf_name,
     direction: "previous",
-    items: [],
+    items: [{
+      id: result.request_id,
+      title: "Request sent.",
+      author: "New chapter should be available in about 90 seconds.",
+    }],
   };
 }
+
 async function currentStory(env, request) {
   const userId = String(
     request.searchParams.get("user_id") || ""
@@ -744,7 +753,7 @@ export default {
           origin
         );
       }
-      
+
       if (
         request.method === "GET" &&
         url.pathname === "/story/current-by-user"
