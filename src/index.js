@@ -221,8 +221,8 @@ async function createRequest(env, body, action) {
   let storyId = String(body.story_id || "").trim();
   const folderId = String(body.folder_id || "").trim();
   const url = String(body.url || "").trim();
-  const chapterNumber =
-    body.chapter_number == null ? null : Number(body.chapter_number);
+  const tocIndex =
+    body.toc_index == null ? null : Number(body.toc_index);
 
   if (!userId) throw new Error("Thiếu user_id");
   if (!folderId) throw new Error("Thiếu folder_id");
@@ -259,9 +259,9 @@ async function createRequest(env, body, action) {
 
   if (
     action === "jump" &&
-    (!Number.isInteger(chapterNumber) || chapterNumber < 1)
+    (!Number.isInteger(tocIndex) || tocIndex < 1)
   ) {
-    throw new Error("chapter_number không hợp lệ");
+    throw new Error("toc_index không hợp lệ");
   }
 
   const requestId = crypto.randomUUID();
@@ -275,7 +275,7 @@ async function createRequest(env, body, action) {
     folder_id: folderId,
     action,
     url: url || null,
-    chapter_number: chapterNumber,
+    toc_index: tocIndex,
     status: "queued",
     message: "Đã xếp hàng xử lý.",
     created_at: now,
