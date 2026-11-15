@@ -686,11 +686,6 @@ async function sources(env) {
   }
 }
 
-
-/* =========================================================
-   EPUB METADATA
-   ========================================================= */
-
 const MAX_EPUB_BYTES = 40 * 1024 * 1024;
 
 function decodeXmlEntities(value) {
@@ -933,6 +928,91 @@ async function epubMetadata(request, origin) {
 }
 
 
+const NATIVE_TEST_FILE_ID = "1ZbeT2xFGXYrLvsy4WTIyFs39G626fAwB";
+
+async function nativeCatalog(request, origin) {
+  if (request.method !== "GET") {
+    return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
+  }
+
+  const metadataUrl = new URL("/metadata", request.url);
+  metadataUrl.searchParams.set("file_id", NATIVE_TEST_FILE_ID);
+  const metadataRequest = new Request(metadataUrl.toString(), {
+    method: "GET",
+    headers: request.headers,
+  });
+  const metadataResponse = await epubMetadata(metadataRequest, origin);
+  const metadata = await metadataResponse.json();
+
+  if (!metadataResponse.ok || metadata.ok !== true) {
+    return json({
+      ok: false,
+      error: metadata.error || "Không đọc được metadata EPUB",
+    }, metadataResponse.status || 502, origin);
+  }
+
+  const downloadUrl = new URL("/native/download", request.url);
+  downloadUrl.searchParams.set("file_id", NATIVE_TEST_FILE_ID);
+
+  return json({
+    items: [{
+      id: NATIVE_TEST_FILE_ID,
+      title: metadata.title || "Untitled",
+      author: metadata.author || "",
+      url: downloadUrl.toString(),
+      description: "Tải EPUB thử nghiệm từ Tàng Thư",
+    }],
+  }, 200, origin);
+}
+
+async function nativeDownload(request, origin) {
+  if (request.method !== "GET") {
+    return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
+  }
+
+  const url = new URL(request.url);
+  const fileId = String(url.searchParams.get("file_id") || "").trim();
+
+  // Prototype is intentionally restricted to one known test EPUB.
+  if (fileId !== NATIVE_TEST_FILE_ID) {
+    return json({ ok: false, error: "File ID không nằm trong danh sách thử nghiệm" }, 403, origin);
+  }
+
+  const driveUrl = "https://drive.google.com/uc?export=download&id=" +
+    encodeURIComponent(fileId);
+  const upstream = await fetch(driveUrl, { redirect: "follow" });
+
+  if (!upstream.ok) {
+    return json({
+      ok: false,
+      error: "Google Drive HTTP " + upstream.status,
+    }, 502, origin);
+  }
+
+  const contentType = String(upstream.headers.get("content-type") || "").toLowerCase();
+  if (contentType.includes("text/html")) {
+    return json({
+      ok: false,
+      error: "Google Drive trả về trang xác nhận HTML; chưa thể tải trực tiếp file này",
+    }, 502, origin);
+  }
+
+  const responseHeaders = new Headers({
+    "Content-Type": "application/epub+zip",
+    "Content-Disposition": 'attachment; filename="0neStory.epub"',
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": origin || DEFAULT_ALLOWED_ORIGIN,
+    "Vary": "Origin",
+  });
+  const length = upstream.headers.get("content-length");
+  if (length) responseHeaders.set("Content-Length", length);
+
+  return new Response(upstream.body, {
+    status: 200,
+    headers: responseHeaders,
+  });
+}
+
 export default {
   async fetch(request, env) {
     const origin = requestOrigin(request, env);
@@ -958,10 +1038,27 @@ export default {
 
     try {
       if (url.pathname === "/metadata") {
+        if (request.method !== "GET") {
+          return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
+        }
         if (!rateLimit(request, "metadata")) {
           return json({ ok: false, error: "Too many requests" }, 429, origin);
         }
         return await epubMetadata(request, origin);
+      }
+
+      if (url.pathname === "/native/catalog") {
+        if (!rateLimit(request, "native_catalog")) {
+          return json({ ok: false, error: "Too many requests" }, 429, origin);
+        }
+        return await nativeCatalog(request, origin);
+      }
+
+      if (url.pathname === "/native/download") {
+        if (!rateLimit(request, "native_download")) {
+          return json({ ok: false, error: "Too many requests" }, 429, origin);
+        }
+        return await nativeDownload(request, origin);
       }
 
       if (
