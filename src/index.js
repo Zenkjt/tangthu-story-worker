@@ -967,17 +967,27 @@ async function resolveShelfStoryFile(env, shelfNo) {
 }
 
 async function nativeCatalog(request, origin, env) {
-  if (request.method !== "POST") {
+  let shelfNo;
+
+  if (request.method === "GET") {
+    const url = new URL(request.url);
+    shelfNo = Number(url.searchParams.get("shelf_no"));
+  } else if (request.method === "POST") {
+    // Keep POST compatibility for previously generated clients.
+    let body;
+    try {
+      body = await request.json();
+    } catch {
+      return json({ ok: false, error: "Invalid JSON body" }, 400, origin);
+    }
+    shelfNo = Number(body?.shelf_no);
+  } else {
     return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
   }
 
-  let body;
-  try {
-    body = await request.json();
-  } catch {
-    return json({ ok: false, error: "Invalid JSON body" }, 400, origin);
+  if (!Number.isInteger(shelfNo) || shelfNo < 1) {
+    return json({ ok: false, error: "Invalid shelf_no" }, 400, origin);
   }
-  const shelfNo = Number(body?.shelf_no);
 
   try {
     const resolved = await resolveShelfStoryFile(env, shelfNo);
