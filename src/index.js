@@ -928,58 +928,116 @@ async function epubMetadata(request, origin) {
 }
 
 
-const NATIVE_TEST_FILE_ID = "1ZbeT2xFGXYrLvsy4WTIyFs39G626fAwB";
+async function resolveShelfStoryFile(env, shelfNo) {
+  if (!Number.isInteger(shelfNo) || shelfNo < 1) {
+    throw new Error("Invalid shelf_no");
+  }
 
-async function nativeCatalog(request, origin) {
-  if (request.method !== "GET") {
+  const shelf = await loadCrosspointShelf(env, shelfNo);
+  const appsScriptUrl = String(env.TANGTHU_APPS_SCRIPT_URL || "").trim();
+  const token = String(env.TANGTHU_UPLOAD_TOKEN || "").trim();
+
+  if (!appsScriptUrl || !token) {
+    throw new Error("Thiếu cấu hình Apps Script bridge");
+  }
+
+  const response = await fetch(appsScriptUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      action: "story_file",
+      token,
+      folder_id: shelf.folder_id,
+    }),
+  });
+
+  const raw = await response.text();
+  let result;
+  try {
+    result = JSON.parse(raw || "{}");
+  } catch {
+    throw new Error("Apps Script trả về dữ liệu không hợp lệ");
+  }
+
+  if (!response.ok || result.ok !== true || !result.file_id) {
+    throw new Error(result.error || `Apps Script HTTP ${response.status}`);
+  }
+
+  return { shelf, file: result };
+}
+
+async function nativeCatalog(request, origin, env) {
+  if (request.method !== "POST") {
     return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
   }
 
-  const metadataUrl = new URL("/metadata", request.url);
-  metadataUrl.searchParams.set("file_id", NATIVE_TEST_FILE_ID);
-  const metadataRequest = new Request(metadataUrl.toString(), {
-    method: "GET",
-    headers: request.headers,
-  });
-  const metadataResponse = await epubMetadata(metadataRequest, origin);
-  const metadata = await metadataResponse.json();
+  let body;
+  try {
+    body = await request.json();
+  } catch {
+    return json({ ok: false, error: "Invalid JSON body" }, 400, origin);
+  }
+  const shelfNo = Number(body?.shelf_no);
 
-  if (!metadataResponse.ok || metadata.ok !== true) {
+  try {
+    const resolved = await resolveShelfStoryFile(env, shelfNo);
+    const metadataUrl = new URL("/metadata", request.url);
+    metadataUrl.searchParams.set("file_id", resolved.file.file_id);
+
+    const metadataResponse = await epubMetadata(
+      new Request(metadataUrl.toString(), { method: "GET" }),
+      origin
+    );
+    const metadata = await metadataResponse.json();
+
+    if (!metadataResponse.ok || metadata.ok !== true) {
+      return json({
+        ok: false,
+        error: metadata.error || "Không đọc được metadata 0neStory.epub",
+      }, metadataResponse.status || 502, origin);
+    }
+
+    const downloadUrl = new URL("/native/download", request.url);
+    downloadUrl.searchParams.set("shelf_no", String(shelfNo));
+
+    return json({
+      items: [{
+        id: String(shelfNo),
+        title: metadata.title || "0neStory",
+        author: metadata.author || resolved.shelf.shelf_name || "",
+        url: downloadUrl.toString(),
+        description: "Tải 0neStory.epub của tủ sách này",
+      }],
+    }, 200, origin);
+  } catch (error) {
     return json({
       ok: false,
-      error: metadata.error || "Không đọc được metadata EPUB",
-    }, metadataResponse.status || 502, origin);
+      error: String(error?.message || error),
+    }, 404, origin);
   }
-
-  const downloadUrl = new URL("/native/download", request.url);
-  downloadUrl.searchParams.set("file_id", NATIVE_TEST_FILE_ID);
-
-  return json({
-    items: [{
-      id: NATIVE_TEST_FILE_ID,
-      title: metadata.title || "Untitled",
-      author: metadata.author || "",
-      url: downloadUrl.toString(),
-      description: "Tải EPUB thử nghiệm từ Tàng Thư",
-    }],
-  }, 200, origin);
 }
 
-async function nativeDownload(request, origin) {
+async function nativeDownload(request, origin, env) {
   if (request.method !== "GET") {
     return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
   }
 
   const url = new URL(request.url);
-  const fileId = String(url.searchParams.get("file_id") || "").trim();
+  const shelfNo = Number(url.searchParams.get("shelf_no"));
 
-  // Prototype is intentionally restricted to one known test EPUB.
-  if (fileId !== NATIVE_TEST_FILE_ID) {
-    return json({ ok: false, error: "File ID không nằm trong danh sách thử nghiệm" }, 403, origin);
+  let resolved;
+  try {
+    // Resolve again at download time so the plugin always gets the current shelf file.
+    resolved = await resolveShelfStoryFile(env, shelfNo);
+  } catch (error) {
+    return json({
+      ok: false,
+      error: String(error?.message || error),
+    }, 404, origin);
   }
 
   const driveUrl = "https://drive.google.com/uc?export=download&id=" +
-    encodeURIComponent(fileId);
+    encodeURIComponent(resolved.file.file_id);
   const upstream = await fetch(driveUrl, { redirect: "follow" });
 
   if (!upstream.ok) {
@@ -993,7 +1051,7 @@ async function nativeDownload(request, origin) {
   if (contentType.includes("text/html")) {
     return json({
       ok: false,
-      error: "Google Drive trả về trang xác nhận HTML; chưa thể tải trực tiếp file này",
+      error: "Google Drive trả về trang HTML; kiểm tra quyền truy cập hoặc xác nhận tải xuống",
     }, 502, origin);
   }
 
@@ -1051,14 +1109,14 @@ export default {
         if (!rateLimit(request, "native_catalog")) {
           return json({ ok: false, error: "Too many requests" }, 429, origin);
         }
-        return await nativeCatalog(request, origin);
+        return await nativeCatalog(request, origin, env);
       }
 
       if (url.pathname === "/native/download") {
         if (!rateLimit(request, "native_download")) {
           return json({ ok: false, error: "Too many requests" }, 429, origin);
         }
-        return await nativeDownload(request, origin);
+        return await nativeDownload(request, origin, env);
       }
 
       if (
