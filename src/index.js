@@ -686,6 +686,253 @@ async function sources(env) {
   }
 }
 
+
+/* =========================================================
+   EPUB METADATA
+   ========================================================= */
+
+const MAX_EPUB_BYTES = 40 * 1024 * 1024;
+
+function decodeXmlEntities(value) {
+  return value.replace(/&(#x[0-9a-f]+|#\d+|lt|gt|amp|quot|apos);/gi, (entity, code) => {
+    const key = code.toLowerCase();
+    if (key === "lt") return "<";
+    if (key === "gt") return ">";
+    if (key === "amp") return "&";
+    if (key === "quot") return '"';
+    if (key === "apos") return "'";
+    const numeric = key.startsWith("#x")
+      ? parseInt(key.slice(2), 16)
+      : parseInt(key.slice(1), 10);
+    if (!Number.isFinite(numeric) || numeric < 0 || numeric > 0x10ffff) {
+      return entity;
+    }
+    try {
+      return String.fromCodePoint(numeric);
+    } catch {
+      return entity;
+    }
+  });
+}
+
+function xmlText(xml, localName) {
+  const escaped = localName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const pattern = new RegExp(
+    "<(?:[\\w.-]+:)?" + escaped + "(?:\\s[^>]*)?>([\\s\\S]*?)<\\/(?:[\\w.-]+:)?" + escaped + "\\s*>",
+    "i"
+  );
+  const match = xml.match(pattern);
+  if (!match) return "";
+  return decodeXmlEntities(
+    match[1]
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+      .replace(/<[^>]+>/g, "")
+      .trim()
+  );
+}
+
+function findZipEnd(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const min = Math.max(0, bytes.length - 65557);
+  for (let offset = bytes.length - 22; offset >= min; offset--) {
+    if (
+      offset + 22 <= bytes.length &&
+      view.getUint32(offset, true) === 0x06054b50
+    ) {
+      const commentLength = view.getUint16(offset + 20, true);
+      if (offset + 22 + commentLength === bytes.length) return offset;
+    }
+  }
+  throw new Error("EPUB ZIP directory not found or invalid");
+}
+
+function findZipEntry(bytes, wanted) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const eocd = findZipEnd(bytes);
+  const diskNo = view.getUint16(eocd + 4, true);
+  const centralDisk = view.getUint16(eocd + 6, true);
+  const entriesOnDisk = view.getUint16(eocd + 8, true);
+  const entryCount = view.getUint16(eocd + 10, true);
+  const centralSize = view.getUint32(eocd + 12, true);
+  let offset = view.getUint32(eocd + 16, true);
+
+  if (diskNo !== 0 || centralDisk !== 0 || entriesOnDisk !== entryCount) {
+    throw new Error("Multi-disk ZIP is not supported");
+  }
+  if (
+    entryCount === 0xffff ||
+    centralSize === 0xffffffff ||
+    offset === 0xffffffff
+  ) {
+    throw new Error("ZIP64 EPUB is not supported");
+  }
+  if (offset + centralSize > eocd || offset > bytes.length) {
+    throw new Error("Invalid ZIP central directory bounds");
+  }
+
+  for (let i = 0; i < entryCount; i++) {
+    if (offset + 46 > bytes.length || view.getUint32(offset, true) !== 0x02014b50) {
+      throw new Error("Invalid ZIP central directory entry");
+    }
+
+    const flags = view.getUint16(offset + 8, true);
+    const method = view.getUint16(offset + 10, true);
+    const compressedSize = view.getUint32(offset + 20, true);
+    const nameLength = view.getUint16(offset + 28, true);
+    const extraLength = view.getUint16(offset + 30, true);
+    const commentLength = view.getUint16(offset + 32, true);
+    const localOffset = view.getUint32(offset + 42, true);
+    const nextOffset = offset + 46 + nameLength + extraLength + commentLength;
+
+    if (nextOffset > offset + centralSize || nextOffset > bytes.length) {
+      throw new Error("Invalid ZIP entry length");
+    }
+
+    const name = new TextDecoder().decode(
+      bytes.subarray(offset + 46, offset + 46 + nameLength)
+    );
+
+    if (name === wanted) {
+      if (flags & 1) throw new Error("Encrypted EPUB entries are not supported");
+      if (localOffset + 30 > bytes.length || view.getUint32(localOffset, true) !== 0x04034b50) {
+        throw new Error("Invalid ZIP local file header");
+      }
+
+      const localNameLength = view.getUint16(localOffset + 26, true);
+      const localExtraLength = view.getUint16(localOffset + 28, true);
+      const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+      const dataEnd = dataStart + compressedSize;
+
+      if (dataEnd > bytes.length) throw new Error("Invalid ZIP entry data bounds");
+      return {
+        method,
+        data: bytes.subarray(dataStart, dataEnd),
+      };
+    }
+
+    offset = nextOffset;
+  }
+
+  return null;
+}
+
+async function unzipEpubEntry(bytes, path) {
+  const entry = findZipEntry(bytes, path);
+  if (!entry) throw new Error("EPUB entry not found: " + path);
+  if (entry.method === 0) return entry.data;
+  if (entry.method !== 8) {
+    throw new Error("Unsupported ZIP compression method: " + entry.method);
+  }
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("Worker runtime lacks DecompressionStream");
+  }
+
+  const stream = new Blob([entry.data])
+    .stream()
+    .pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+async function readLimitedBody(response, maxBytes) {
+  const declaredLength = Number(response.headers.get("content-length") || 0);
+  if (declaredLength > maxBytes) {
+    throw new Error("EPUB exceeds the 40 MB metadata limit");
+  }
+  if (!response.body) {
+    const buffer = await response.arrayBuffer();
+    if (buffer.byteLength > maxBytes) {
+      throw new Error("EPUB exceeds the 40 MB metadata limit");
+    }
+    return new Uint8Array(buffer);
+  }
+
+  const reader = response.body.getReader();
+  const chunks = [];
+  let total = 0;
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel();
+        throw new Error("EPUB exceeds the 40 MB metadata limit");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const result = new Uint8Array(total);
+  let position = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, position);
+    position += chunk.byteLength;
+  }
+  return result;
+}
+
+async function epubMetadata(request, origin) {
+  if (request.method !== "GET") {
+    return json({ ok: false, error: "Method Not Allowed" }, 405, origin);
+  }
+
+  const url = new URL(request.url);
+  const fileId = String(url.searchParams.get("file_id") || "").trim();
+
+  if (!/^[A-Za-z0-9_-]{10,}$/.test(fileId)) {
+    return json({ ok: false, error: "Invalid or missing Google Drive file ID" }, 400, origin);
+  }
+
+  try {
+    const driveUrl = "https://drive.google.com/uc?export=download&id=" +
+      encodeURIComponent(fileId);
+    const response = await fetch(driveUrl, { redirect: "follow" });
+
+    if (!response.ok) {
+      throw new Error("Google Drive HTTP " + response.status);
+    }
+
+    const bytes = await readLimitedBody(response, MAX_EPUB_BYTES);
+    if (
+      bytes.length < 4 ||
+      new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true) !== 0x04034b50
+    ) {
+      throw new Error("Google Drive did not return an EPUB ZIP file; the file may be private or require a confirmation page");
+    }
+
+    const containerBytes = await unzipEpubEntry(bytes, "META-INF/container.xml");
+    const containerXml = new TextDecoder("utf-8").decode(containerBytes);
+    const rootMatch = containerXml.match(
+      /<rootfile\b[^>]*\bfull-path\s*=\s*["']([^"']+)["']/i
+    );
+
+    if (!rootMatch) {
+      throw new Error("Cannot locate OPF package document in container.xml");
+    }
+
+    const opfPath = decodeXmlEntities(rootMatch[1]);
+    const opfBytes = await unzipEpubEntry(bytes, opfPath);
+    const opfXml = new TextDecoder("utf-8").decode(opfBytes);
+
+    return json({
+      ok: true,
+      file_id: fileId,
+      title: xmlText(opfXml, "title"),
+      author: xmlText(opfXml, "creator"),
+      size: bytes.byteLength,
+    }, 200, origin);
+  } catch (error) {
+    return json({
+      ok: false,
+      error: String(error?.message || error),
+    }, 502, origin);
+  }
+}
+
+
 export default {
   async fetch(request, env) {
     const origin = requestOrigin(request, env);
@@ -710,6 +957,13 @@ export default {
     const url = new URL(request.url);
 
     try {
+      if (url.pathname === "/metadata") {
+        if (!rateLimit(request, "metadata")) {
+          return json({ ok: false, error: "Too many requests" }, 429, origin);
+        }
+        return await epubMetadata(request, origin);
+      }
+
       if (
         request.method === "GET" &&
         url.pathname === "/story/current"
